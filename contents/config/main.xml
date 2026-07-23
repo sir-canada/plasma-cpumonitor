@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kcfg xmlns="http://www.kde.org/standards/kcfg/1.0"
+      xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+      xsi:schemaLocation="http://www.kde.org/standards/kcfg/1.0
+      http://www.kde.org/standards/kcfg/1.0/kcfg.xsd">
+    <kcfgfile name=""/>
+    <group name="General">
+        <entry name="barWidth" type="Int">
+            <default>4</default>
+        </entry>
+        <entry name="barSpacing" type="Int">
+            <default>2</default>
+        </entry>
+        <entry name="updateInterval" type="Int">
+            <default>1500</default>
+        </entry>
+        <entry name="showCpu" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="showGpu" type="Bool">
+            <default>false</default>
+        </entry>
+        <entry name="showVram" type="Bool">
+            <default>false</default>
+        </entry>
+        <entry name="showMem" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="showSwap" type="Bool">
+            <default>false</default>
+        </entry>
+        <entry name="includeSwap" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="warnThreshold" type="Int">
+            <default>75</default>
+        </entry>
+        <entry name="critThreshold" type="Int">
+            <default>90</default>
+        </entry>
+        <entry name="cpuColor" type="Color">
+            <default>#3daee9</default>
+        </entry>
+        <entry name="gpuColor" type="Color">
+            <default>#9b59b6</default>
+        </entry>
+        <entry name="vramColor" type="Color">
+            <default>#16a085</default>
+        </entry>
+        <entry name="memColor" type="Color">
+            <default>#27ae60</default>
+        </entry>
+        <entry name="swapColor" type="Color">
+            <default>#7f8c8d</default>
+        </entry>
+        <entry name="showCoreHeatmap" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="heatWarnThreshold" type="Int">
+            <default>60</default>
+        </entry>
+        <entry name="heatCritThreshold" type="Int">
+            <default>85</default>
+        </entry>
+        <entry name="topAppsCpu" type="Int">
+            <default>3</default>
+        </entry>
+        <entry name="topAppsMem" type="Int">
+            <default>3</default>
+        </entry>
+        <entry name="showMemBar" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="showMemDetail" type="Bool">
+            <default>true</default>
+        </entry>
+    </group>
+</kcfg>

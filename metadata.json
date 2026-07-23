@@ -1,0 +1,20 @@
+{
+    "KPackageStructure": "Plasma/Applet",
+    "KPlugin": {
+        "Authors": [
+            {
+                "Email": "sircanada2@gmail.com",
+                "Name": "sir-canada"
+            }
+        ],
+        "Category": "System Information",
+        "Description": "Compact thin bars for CPU, GPU, VRAM, memory (RAM + zram) and swap, with a rich hover tooltip",
+        "Icon": "utilities-system-monitor",
+        "Id": "org.local.thinbars",
+        "License": "MIT",
+        "Name": "Thin Bars",
+        "Version": "1.0",
+        "Website": "https://github.com/sir-canada/plasma-thinbars"
+    },
+    "X-Plasma-API-Minimum-Version": "6.0"
+}
