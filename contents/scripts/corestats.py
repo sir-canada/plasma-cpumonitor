@@ -160,8 +160,8 @@ def read_process_name(pid: int) -> str:
         comm = str(pid)
     lowered = comm.lower()
     if lowered.startswith(GENERIC_COMM_PREFIXES) or lowered in GENERIC_COMMS:
-        return decode_generic_process(pid, comm).replace("|", " ")
-    return comm.replace("|", " ") or str(pid)
+        return decode_generic_process(pid, comm).replace("|", " ").replace("\n", " ")
+    return sanitize_protocol_name(comm) or str(pid)
 
 
 def read_thread_name(pid: int, tid: str) -> str:
@@ -354,6 +354,11 @@ def load_state(path: Path) -> tuple[float, dict[str, list[int]], dict | list | N
     except (OSError, ValueError, KeyError, TypeError):
         return 0.0, {}, None, None, 0
 
+    # A corrupt file must never take the widget down: fall back to an empty
+    # task map when the persisted shape is not a tid -> [ticks, start] mapping.
+    if not isinstance(tasks, dict):
+        tasks = {}
+
     cpus_current: dict | None = state.get("cpus")
     cpus_snapshot: list[tuple[int, int, int]] | None = None
     if isinstance(cpus_current, dict):
@@ -391,7 +396,7 @@ def save_state(
     timestamp: float,
     tasks: dict[str, tuple[int, int, int, int]],
     cpus: list[tuple[int, int, int]],
-    vm: dict[str, int],
+    vm: dict[str, int] | None,
     run: int,
 ) -> None:
     cpu_count_line = max((idx for idx, _, _ in cpus), default=-1) + 1
@@ -409,7 +414,11 @@ def save_state(
                 "timestamp": timestamp,
                 "tasks": compact_tasks,
                 "cpus": {"busy": busy, "total": total},
-                "vm": {counter: vm.get(counter, 0) for counter in VMSTAT_COUNTERS},
+                # Persist vm only when the snapshot is complete; a partial or
+                # missing /proc/vmstat must NOT be stored as zeros, or the next
+                # run would treat the whole accumulated total as one delta.
+                "vm": (None if vm is None else
+                       {counter: vm.get(counter, 0) for counter in VMSTAT_COUNTERS}),
                 "run": run,
             },
             separators=(",", ":"),
@@ -464,7 +473,9 @@ def main() -> int:
     hot_threads: list[tuple[float, str, int, str]] = []
     for tid, (ticks, started, pid, last_cpu) in current_tasks.items():
         previous = previous_tasks.get(tid)
-        if not previous or previous[1] != started:
+        if not isinstance(previous, (list, tuple)) or len(previous) < 2:
+            continue
+        if previous[1] != started:
             continue
         delta = ticks - previous[0]
         if delta <= 0:
@@ -521,7 +532,11 @@ def main() -> int:
     if do_swap_scan:
         swap_pids = read_swap_usage()
 
-    save_state(path, current_time, current_tasks, current_cpus, current_vm, run_counter + 1)
+    vm_snapshot = current_vm if len(current_vm) == len(VMSTAT_COUNTERS) else None
+    save_state(
+        path, current_time, current_tasks, current_cpus, vm_snapshot,
+        run_counter + 1,
+    )
 
     ticks_per_second = os.sysconf("SC_CLK_TCK")
     p_capacity = max(1, len(p_cpus))

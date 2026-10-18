@@ -853,9 +853,9 @@ PlasmoidItem {
                     spacing: Kirigami.Units.smallSpacing
 
                     // ---- Responsiveness (first, per plan) ----
+                    // Sampler-driven: only meaningful while the CPU bar runs it.
                     RowLayout {
-                        visible: root.cfg.showResponsiveness
-                            && (root.cfg.showCpu || root.cfg.showMem)
+                        visible: root.cfg.showResponsiveness && root.cfg.showCpu
                         Layout.fillWidth: true
                         spacing: Kirigami.Units.smallSpacing
                         TipDetail {
@@ -888,7 +888,8 @@ PlasmoidItem {
                     }
 
                     TipDetail {
-                        visible: root.cfg.showResponsiveness && root.logicalCores > 0
+                        visible: root.cfg.showResponsiveness && root.cfg.showCpu
+                            && root.logicalCores > 0
                         text: i18n("run queue %1/%2 · blocked %3",
                             root.procsRunning, root.logicalCores, root.procsBlocked)
                     }
@@ -1075,13 +1076,14 @@ PlasmoidItem {
                     // Swap activity + the processes paying for it.
                     TipDetail {
                         visible: root.cfg.showMem && root.cfg.showResponsiveness
+                            && root.cfg.showCpu
                         text: i18n("swap-in %1 pg/s · majfault %2/s",
                             root.rateText(root.swapInRate),
                             root.rateText(root.majfltRate))
                     }
                     Repeater {
                         model: root.cfg.showMem && root.cfg.showResponsiveness
-                            ? root.swapGroups : []
+                            && root.cfg.showCpu ? root.swapGroups : []
                         TipRow {
                             required property var modelData
                             name: i18n("%1 swapped", modelData.name)
