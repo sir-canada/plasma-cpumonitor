@@ -32,6 +32,13 @@ KCM.SimpleKCM {
     property alias cfg_topAppsMem: topMemSpin.value
     property alias cfg_showMemBar: memBarCheck.checked
     property alias cfg_showMemDetail: memDetailCheck.checked
+    property alias cfg_cpuBarMode: modeBox.currentIndex
+    property alias cfg_smoothBars: smoothBarsCheck.checked
+    property alias cfg_psiWarn: psiWarnSpin.value
+    property alias cfg_psiCrit: psiCritSpin.value
+    property alias cfg_memPsiThreshold: memPsiSpin.value
+    property alias cfg_swapInThreshold: swapInSpin.value
+    property alias cfg_showResponsiveness: respCheck.checked
 
     Kirigami.FormLayout {
 
@@ -134,6 +141,56 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Critical threshold (%):")
             from: 0
             to: 100
+        }
+
+        Item {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Responsiveness")
+        }
+
+        QQC2.ComboBox {
+            id: modeBox
+            Kirigami.FormData.label: i18n("CPU bar mode:")
+            model: [i18n("Average"), i18n("Responsiveness")]
+        }
+
+        QQC2.CheckBox {
+            id: smoothBarsCheck
+            text: i18n("Smooth falling values")
+        }
+
+        QQC2.SpinBox {
+            id: psiWarnSpin
+            Kirigami.FormData.label: i18n("CPU PSI warning (%):")
+            from: 0
+            to: 100
+        }
+
+        QQC2.SpinBox {
+            id: psiCritSpin
+            Kirigami.FormData.label: i18n("CPU PSI critical (%):")
+            from: 0
+            to: 100
+        }
+
+        QQC2.SpinBox {
+            id: memPsiSpin
+            Kirigami.FormData.label: i18n("Memory PSI critical (%):")
+            from: 0
+            to: 20
+        }
+
+        QQC2.SpinBox {
+            id: swapInSpin
+            Kirigami.FormData.label: i18n("Swap-in alert (pages/s):")
+            from: 0
+            to: 5000
+            stepSize: 100
+        }
+
+        QQC2.CheckBox {
+            id: respCheck
+            text: i18n("Show responsiveness details in tooltip")
         }
 
         Item {

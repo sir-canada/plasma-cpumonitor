@@ -77,5 +77,30 @@
         <entry name="showMemDetail" type="Bool">
             <default>true</default>
         </entry>
+        <entry name="cpuBarMode" type="Enum">
+            <choices>
+                <choice name="average"/>
+                <choice name="responsiveness"/>
+            </choices>
+            <default>1</default>
+        </entry>
+        <entry name="smoothBars" type="Bool">
+            <default>true</default>
+        </entry>
+        <entry name="psiWarn" type="Int">
+            <default>10</default>
+        </entry>
+        <entry name="psiCrit" type="Int">
+            <default>25</default>
+        </entry>
+        <entry name="memPsiThreshold" type="Int">
+            <default>2</default>
+        </entry>
+        <entry name="swapInThreshold" type="Int">
+            <default>500</default>
+        </entry>
+        <entry name="showResponsiveness" type="Bool">
+            <default>true</default>
+        </entry>
     </group>
 </kcfg>

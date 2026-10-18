@@ -64,11 +64,126 @@ PlasmoidItem {
         return (p * pCap + e * eCap) / (pCap + eCap);
     }
 
+    // Group label for a thread's core index: P/E when hybrid, C otherwise.
+    function coreGroupLabel(idx) {
+        const i = Number(idx);
+        if (root.pCores.indexOf(i) >= 0)
+            return "P" + i;
+        if (root.eCores.indexOf(i) >= 0)
+            return "E" + i;
+        return "C" + i;
+    }
+
+    // Fast attack, slow decay: jump up immediately, fall with tau seconds.
+    function dispValue(cur, target, dt, tau) {
+        if (!root.cfg.smoothBars)
+            return target;
+        if (target >= cur)
+            return target;
+        return target + (cur - target) * Math.exp(-(dt || 0) / tau);
+    }
+
+    // CPU bar color with responsiveness overrides; PSI pressure is
+    // machine-wide, so the same override hue applies to both hybrid bars.
+    function cpuBarColor(base) {
+        if (root.cfg.cpuBarMode !== 1)
+            return base;
+        if (root.psiCpu >= root.cfg.psiCrit || root.hotStallCount >= 2)
+            return Kirigami.Theme.negativeTextColor;
+        if (root.psiCpu >= root.cfg.psiWarn)
+            return Kirigami.Theme.neutralTextColor;
+        return base;
+    }
+
     function friendlyApplicationName(name) {
         const value = String(name);
         // Ghostty's transient terminal scopes are exposed by KSysGuard as
         // "surface", which is its internal scope name rather than an app name.
         return value === "surface" ? i18n("Ghostty terminals") : value;
+    }
+
+    // Memory bar color: activity-based overrides over the existing size-based
+    // logic (warn/crit thresholds on the displayed value, cfg.memColor base).
+    function memBarColor(fracPct) {
+        if (root.psiMem >= root.cfg.memPsiThreshold
+            || root.swapInRate >= root.cfg.swapInThreshold)
+            return Kirigami.Theme.negativeTextColor;
+        if (root.memAvailKB > 0
+            && root.memAvailKB < 0.1 * (root.memTotal.value || 0))
+            return Kirigami.Theme.neutralTextColor;
+        if (fracPct >= root.cfg.critThreshold)
+            return Kirigami.Theme.negativeTextColor;
+        if (fracPct >= root.cfg.warnThreshold)
+            return Kirigami.Theme.neutralTextColor;
+        return root.cfg.memColor;
+    }
+
+    // Rough rate formatting: "x.xk" for thousands and up.
+    function rateText(r) {
+        const v = Number(r) || 0;
+        return v >= 1000 ? (v / 1000).toFixed(1) + "k" : v.toFixed(1);
+    }
+
+    // Verdict word + precedence: Stalled > Swapping > Contended > Smooth.
+    function responsivenessVerdict() {
+        if (root.hotStallCount >= 2)
+            return [i18n("Stalled thread"), Kirigami.Theme.negativeTextColor];
+        if (root.swapInRate >= root.cfg.swapInThreshold)
+            return [i18n("Swapping"), Kirigami.Theme.neutralTextColor];
+        if (root.psiCpu >= root.cfg.psiWarn)
+            return [i18n("Contended"), Kirigami.Theme.neutralTextColor];
+        return [i18n("Smooth"), Kirigami.Theme.positiveTextColor];
+    }
+
+    // Composite CPU bar targets, fast-attack/slow-decay smoothing and the
+    // lag trend push. Called once per valid SAMPLE batch; dt is the SAMPLE
+    // elapsed in seconds.
+    function updateTargets(dt) {
+        const tau = 3.0;
+        const avgUniform = cpuSensor.value || 0;
+        const hotMax = root.hotThreads.length > 0 ? root.hotThreads[0].pct : 0;
+        let uniformTarget = 0;
+        let pTarget = 0;
+        let eTarget = 0;
+        if (root.cfg.cpuBarMode === 1) {
+            const psiTerm = root.psiCpu * 3;
+            const aMax = root.coreMaxA.length > 0 ? root.coreMaxA[0].pct : 0;
+            uniformTarget = Math.min(100,
+                Math.max(avgUniform, psiTerm, aMax, hotMax));
+        } else {
+            uniformTarget = avgUniform;
+            pTarget = root.pCpuGroupPct;
+            eTarget = root.eCpuGroupPct;
+        }
+        if (root.cfg.cpuBarMode === 1 && root.hybridTopology) {
+            const psiTerm = root.psiCpu * 3;
+            const pMax = root.coreMaxP.length > 0 ? root.coreMaxP[0].pct : 0;
+            const eMax = root.coreMaxE.length > 0 ? root.coreMaxE[0].pct : 0;
+            let hotP = 0;
+            let hotE = 0;
+            for (const t of root.hotThreads) {
+                const i = Number(t.cpuIdx);
+                if (root.pCores.indexOf(i) >= 0) {
+                    hotP = Math.max(hotP, t.pct);
+                } else if (root.eCores.indexOf(i) >= 0) {
+                    hotE = Math.max(hotE, t.pct);
+                }
+            }
+            pTarget = Math.min(100,
+                Math.max(root.pCpuGroupPct, psiTerm, pMax, hotP));
+            eTarget = Math.min(100,
+                Math.max(root.eCpuGroupPct, psiTerm, eMax, hotE));
+        }
+        root.dispUniform = root.dispValue(root.dispUniform, uniformTarget, dt, tau);
+        root.dispP = root.dispValue(root.dispP, pTarget, dt, tau);
+        root.dispE = root.dispValue(root.dispE, eTarget, dt, tau);
+
+        // Trend ring buffer: the uniform / P composite target, max 60 entries,
+        // pushed on every valid SAMPLE regardless of hover.
+        root.lagHistory = root.lagHistory.concat([Math.max(uniformTarget, pTarget)]);
+        while (root.lagHistory.length > 60)
+            root.lagHistory.shift();
+        root.lagRevision++;
     }
 
     function refreshApplicationLists() {
@@ -111,6 +226,8 @@ PlasmoidItem {
                 applicationModel.index(row, 0), Process.ProcessDataModel.PIDs) || [];
             let pPercent = 0;
             let ePercent = 0;
+            // Sum this application's per-pid VmSwap from the sampler.
+            let swapKiB = 0;
 
             for (const pid of pids) {
                 const key = String(pid);
@@ -120,6 +237,7 @@ PlasmoidItem {
                     pPercent += coreUsage.p;
                     ePercent += coreUsage.e;
                 }
+                swapKiB += Number(root.swapByPid[key]) || 0;
             }
 
             if (menuId === "services") {
@@ -128,7 +246,7 @@ PlasmoidItem {
                 // its processes individually by their sampled names and keep
                 // only those above the whole-machine CPU threshold.
                 if (memoryKiB > 0)
-                    memory.push({ name: displayName, amount: memoryKiB });
+                    memory.push({ name: displayName, amount: memoryKiB, swap: swapKiB });
 
                 const grouped = {};
                 for (const pid of pids) {
@@ -168,7 +286,7 @@ PlasmoidItem {
             if (ePercent > 0)
                 eApps.push({ name: displayName, amount: ePercent });
             if (memoryKiB > 0)
-                memory.push({ name: displayName, amount: memoryKiB });
+                memory.push({ name: displayName, amount: memoryKiB, swap: swapKiB });
         }
 
         for (const svc of services) {
@@ -208,10 +326,15 @@ PlasmoidItem {
         root.eCpuApps = root.cpuItems(eApps, root.cfg.topAppsCpu);
 
         memory.sort((a, b) => b.amount - a.amount);
-        root.memApps = memory.slice(0, root.cfg.topAppsMem).map(item => ({
-            name: item.name,
-            value: (item.amount / 1048576).toFixed(2) + " GiB"
-        }));
+        root.memApps = memory.slice(0, root.cfg.topAppsMem).map(item => {
+            const base = (item.amount / 1048576).toFixed(2) + " GiB";
+            return {
+                name: item.name,
+                value: item.swap > 0
+                    ? i18n("%1 (+%2 swap)", base, root.gib(item.swap * 1024))
+                    : base
+            };
+        });
     }
 
     Sensors.Sensor { id: cpuSensor; sensorId: "cpu/all/usage"; enabled: root.cfg.showCpu; updateRateLimit: root.cfg.updateInterval }
@@ -248,6 +371,54 @@ PlasmoidItem {
     property var pCores: []   // thread indices of P-cores (Intel hybrid)
     property var eCores: []   // thread indices of E-cores
     readonly property bool hybridTopology: pCores.length > 0 && eCores.length > 0
+
+    // --- Responsiveness sampler additions (PSI / hot threads / VM / zram) ---
+    property real psiCpu: 0            // CPU "some" pressure, percent
+    property real psiMem: 0            // memory "some" pressure, percent
+    property real psiIo: 0             // I/O "some" pressure, percent
+    property var hotThreads: []        // [{tid, pid, pct, cpuIdx, name}]
+    property real swapInRate: 0        // pages/s, from /proc/vmstat deltas
+    property real swapOutRate: 0
+    property real majfltRate: 0
+    property int procsRunning: 0
+    property int procsBlocked: 0
+    property real zramOrig: 0          // uncompressed bytes stored in zram
+    property real zramReal: 0          // bytes of RAM used to store them
+    property real memAvailKB: 0        // MemAvailable (kB)
+    property real memCacheKB: 0        // page cache (kB)
+    property var coreMaxP: []          // [{idx, pct}] busiest core per group
+    property var coreMaxE: []
+    property var coreMaxA: []
+    property var swapByPid: ({})       // pid string -> VmSwap KiB
+    property var swapGroups: []        // [{kB, name}] aggregated, top 5
+    property var lagHistory: []        // composite CPU target ring buffer
+    property int lagRevision: 0        // bumped per push so the Canvas repaints
+    property int hotStallCount: 0      // consecutive samples with a >=95% thread
+    property real hotStallMaxPct: 0
+
+    // Smoothed bar display values: fast attack, slow decay (tau = 3 s).
+    property real dispUniform: 0
+    property real dispP: 0
+    property real dispE: 0
+    property real swapFlashOpacity: 0
+
+    readonly property int logicalCores: root.hybridTopology
+        ? root.pCores.length + root.eCores.length
+        : ((root.cfg.showCoreHeatmap && (coreCount.value || 0) > 0)
+            ? coreCount.value : 0)
+
+    // Memory bar segments as fractions of the addressable pool (honors
+    // cfg.includeSwap). Falls back to the old memPct when the sampler
+    // MEMINFO/ZRAM data is absent (both inputs zero).
+    readonly property real memSegApp: memTotalBytes > 0
+        ? (memApp.value || 0) / memTotalBytes : 0
+    readonly property real memSegZram: memTotalBytes > 0 && cfg.includeSwap
+        ? zramReal / memTotalBytes : 0
+    readonly property real memSegCache: memTotalBytes > 0
+        ? (memCacheKB * 1024) / memTotalBytes : 0
+    readonly property bool memHasSamplerData: zramReal > 0 || memCacheKB > 0
+    readonly property real memBarValue: memHasSamplerData
+        ? Math.min(1, memSegApp + memSegZram + memSegCache) : memPct
 
     // [{label, cores}] — split into P/E groups on hybrid CPUs, single group otherwise
     readonly property var coreSegments: {
@@ -339,6 +510,13 @@ PlasmoidItem {
         onTriggered: root.refreshApplicationLists()
     }
 
+    // One-shot pulse for the memory bar's swap-in flash strip.
+    Timer {
+        id: flashTimer
+        interval: 700
+        onTriggered: root.swapFlashOpacity = 0
+    }
+
     P5Support.DataSource {
         id: coreStats
         engine: "executable"
@@ -356,6 +534,13 @@ PlasmoidItem {
             let totalP = 0;
             let totalE = 0;
             let sampleReady = false;
+            let sampleElapsed = 0;
+            let hotLines = [];
+            let hotMax = 0;
+            let swapPidMap = {};
+            let sawSwapPid = false;
+            let sawSwapGrp = false;
+            let swapGrpLines = [];
             out.split("\n").forEach(l => {
                 const f = l.split("|");
                 if (f[0] === "CPU") {
@@ -370,17 +555,79 @@ PlasmoidItem {
                     totalE += e;
                 } else if (f[0] === "SAMPLE") {
                     sampleReady = true;
+                    sampleElapsed = Number(f[1]) || 0;
                 } else if (f[0] === "TOPO" && f[1] === "core") {
                     root.pCores = root.expandCpuList(f[2]);
                 } else if (f[0] === "TOPO" && f[1] === "atom") {
                     root.eCores = root.expandCpuList(f[2]);
+                } else if (f[0] === "PSI") {
+                    root.psiCpu = Number(f[1]) || 0;
+                    root.psiMem = Number(f[2]) || 0;
+                    root.psiIo = Number(f[3]) || 0;
+                } else if (f[0] === "HOT") {
+                    const pct = Number(f[3]) || 0;
+                    hotMax = Math.max(hotMax, pct);
+                    hotLines.push({
+                        tid: f[1] || "",
+                        pid: f[2] || "0",
+                        pct: pct,
+                        cpuIdx: Number(f[4]) || 0,
+                        name: f.slice(5).join("|") || "?"
+                    });
+                } else if (f[0] === "VM") {
+                    root.swapInRate = Number(f[1]) || 0;
+                    root.swapOutRate = Number(f[2]) || 0;
+                    root.majfltRate = Number(f[3]) || 0;
+                    root.procsRunning = Number(f[4]) || 0;
+                    root.procsBlocked = Number(f[5]) || 0;
+                } else if (f[0] === "ZRAM") {
+                    root.zramOrig = Number(f[1]) || 0;
+                    // ZRAM|orig|compr|real — the compressed footprint we cost
+                    // is the THIRD field; compr alone understates it.
+                    root.zramReal = Number(f[3]) || 0;
+                } else if (f[0] === "MEMINFO") {
+                    root.memAvailKB = Number(f[1]) || 0;
+                    root.memCacheKB = Number(f[2]) || 0;
+                } else if (f[0] === "COREMAX") {
+                    const entry = [{ idx: Number(f[2]) || 0, pct: Number(f[3]) || 0 }];
+                    if (f[1] === "P") {
+                        root.coreMaxP = entry;
+                    } else if (f[1] === "E") {
+                        root.coreMaxE = entry;
+                    } else if (f[1] === "A") {
+                        root.coreMaxA = entry;
+                    }
+                } else if (f[0] === "SWAPPID") {
+                    sawSwapPid = true;
+                    swapPidMap[String(f[1])] = Number(f[2]) || 0;
+                } else if (f[0] === "SWAPGRP") {
+                    sawSwapGrp = true;
+                    swapGrpLines.push({
+                        kB: Number(f[1]) || 0,
+                        name: f.slice(2).join("|") || "?"
+                    });
                 }
             });
             root.coreCpuByPid = usage;
+
+            // Commit sampler-batch results. Swap data is refreshed only on
+            // the sampler's every-5th pass, so keep previous values otherwise.
+            hotLines.sort((a, b) => b.pct - a.pct);
+            root.hotThreads = hotLines;
+            root.hotStallMaxPct = hotMax;
+            root.hotStallCount = hotMax >= 95 ? root.hotStallCount + 1 : 0;
+            root.swapByPid = sawSwapPid ? swapPidMap : root.swapByPid;
+            root.swapGroups = sawSwapGrp ? swapGrpLines : root.swapGroups;
+            if (root.swapInRate > 0 && root.cfg.swapInThreshold > 0) {
+                root.swapFlashOpacity =
+                    Math.min(1, root.swapInRate / root.cfg.swapInThreshold);
+                flashTimer.restart();
+            }
             if (sampleReady) {
                 root.coreSampleReady = true;
                 root.pCpuGroupPct = Math.min(100, totalP);
                 root.eCpuGroupPct = Math.min(100, totalE);
+                root.updateTargets(sampleElapsed);
             }
             root.refreshApplicationLists();
         }
@@ -410,6 +657,92 @@ PlasmoidItem {
             Behavior on height {
                 NumberAnimation { duration: 300; easing.type: Easing.OutQuad }
             }
+        }
+    }
+
+    // Stacked memory bar: app RAM (solid), zram compressed (lighter) and
+    // reclaimable page cache (faint) piled from the bottom of the pool.
+    // A short strip flashes above the fill while pages are swapping in.
+    component MemBar: Item {
+        id: memBar
+        property real appFraction: 0
+        property real zramFraction: 0
+        property real cacheFraction: 0
+        property real fillFraction: 0
+        property color barColor: root.cfg.memColor
+        property real flash: 0
+        width: Math.max(1, root.cfg.barWidth)
+
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: Kirigami.Theme.textColor
+            opacity: 0.25
+        }
+        // Track background + stacked segments, anchored to the bottom.
+        Item {
+            anchors {
+                left: parent.left
+                right: parent.right
+                bottom: parent.bottom
+            }
+            height: Math.max(memBar.width,
+                parent.height * Math.min(1, Math.max(0, memBar.fillFraction)))
+
+            Rectangle {
+                anchors.fill: parent
+                radius: width / 2
+                color: memBar.barColor
+            }
+            // Page cache sits on top of app RAM, above zram's compressed block.
+            Rectangle {
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                }
+                height: parent.height * memBar.zramFraction
+                radius: width / 2
+                color: Qt.alpha(root.cfg.swapColor, 0.7)
+            }
+            Rectangle {
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                }
+                height: parent.height
+                radius: width / 2
+                color: Qt.alpha(Kirigami.Theme.textColor, 0.18)
+            }
+            Rectangle {
+                anchors {
+                    left: parent.left
+                    right: parent.right
+                    bottom: parent.bottom
+                }
+                height: parent.height * memBar.appFraction
+                radius: width / 2
+                color: memBar.barColor
+            }
+        }
+        // Swap-in flash above the fill.
+        Rectangle {
+            visible: memBar.flash > 0
+            anchors {
+                left: parent.left
+                right: parent.right
+                bottom: parent.bottom
+            }
+            height: Math.max(memBar.width,
+                parent.height * Math.min(1, Math.max(0, memBar.fillFraction)))
+            radius: width / 2
+            color: Kirigami.Theme.negativeTextColor
+            opacity: memBar.flash * 0.85
+        }
+
+        Behavior on fillFraction {
+            NumberAnimation { duration: 300; easing.type: Easing.OutQuad }
         }
     }
 
@@ -518,6 +851,47 @@ PlasmoidItem {
                     anchors.fill: parent
                     anchors.margins: Kirigami.Units.largeSpacing
                     spacing: Kirigami.Units.smallSpacing
+
+                    // ---- Responsiveness (first, per plan) ----
+                    RowLayout {
+                        visible: root.cfg.showResponsiveness
+                            && (root.cfg.showCpu || root.cfg.showMem)
+                        Layout.fillWidth: true
+                        spacing: Kirigami.Units.smallSpacing
+                        TipDetail {
+                            text: i18n("Stall: cpu %1% · mem %2% · io %3%",
+                                root.psiCpu.toFixed(1), root.psiMem.toFixed(1),
+                                root.psiIo.toFixed(1))
+                        }
+                        Item { Layout.fillWidth: true }
+                        PC3.Label {
+                            readonly property var verdict:
+                                root.responsivenessVerdict()
+                            text: verdict[0]
+                            color: verdict[1]
+                            font.pointSize: Kirigami.Theme.smallFont.pointSize
+                            font.bold: true
+                        }
+                    }
+
+                    // Hottest threads, so a single stuck thread is visible.
+                    Repeater {
+                        model: root.cfg.showResponsiveness && root.cfg.showCpu
+                            ? root.hotThreads : []
+                        TipRow {
+                            required property var modelData
+                            name: modelData.name
+                            value: i18n("%1% on %2",
+                                Number(modelData.pct).toFixed(1),
+                                root.coreGroupLabel(modelData.cpuIdx))
+                        }
+                    }
+
+                    TipDetail {
+                        visible: root.cfg.showResponsiveness && root.logicalCores > 0
+                        text: i18n("run queue %1/%2 · blocked %3",
+                            root.procsRunning, root.logicalCores, root.procsBlocked)
+                    }
 
                     // ---- CPU ----
                     TipHeader {
@@ -652,19 +1026,19 @@ PlasmoidItem {
                     TipHeader {
                         visible: root.cfg.showMem
                         title: i18n("Memory")
-                        value: Math.round(root.memPct * 100) + "%"
+                        value: Math.round(root.memBarValue * 100) + "%"
                     }
 
                     // Thin usage bar over the whole pool
                     TipUsageBar {
                         visible: root.cfg.showMem && root.cfg.showMemBar
-                        value: root.memPct
-                        fillColor: root.loadColor(root.memPct * 100,
-                            root.cfg.warnThreshold, root.cfg.critThreshold)
+                        value: root.memBarValue
+                        fillColor: root.memBarColor(root.memBarValue * 100)
                     }
 
                     TipDetail {
                         visible: root.cfg.showMem && root.cfg.showMemDetail
+                            && !root.cfg.showResponsiveness
                         text: {
                             let t = i18n("apps %1", root.gib(memApp.value || 0));
                             if (root.cfg.includeSwap)
@@ -672,6 +1046,46 @@ PlasmoidItem {
                             t += i18n(" · pool %1 / %2 GiB",
                                 root.gib(root.memUsedBytes), root.gib(root.memTotalBytes));
                             return t;
+                        }
+                    }
+
+                    // Honest memory line: real zram footprint, reclaimable cache.
+                    TipDetail {
+                        visible: root.cfg.showMem && root.cfg.showResponsiveness
+                        text: {
+                            let t = i18n("RAM %1/%2 GB",
+                                root.gib(memApp.value || 0),
+                                root.gib(memTotal.value || 0));
+                            if (root.memCacheKB > 0)
+                                t += i18n(" · cache %1 GB",
+                                    root.gib(root.memCacheKB * 1024));
+                            if (root.zramReal > 0) {
+                                t += i18n(" · zram %1 → %2 GB (%3×)",
+                                    root.gib(root.zramOrig),
+                                    root.gib(root.zramReal),
+                                    (root.zramOrig / root.zramReal).toFixed(1));
+                            }
+                            if (root.memAvailKB > 0)
+                                t += i18n(" · avail %1 GB",
+                                    root.gib(root.memAvailKB * 1024));
+                            return t;
+                        }
+                    }
+
+                    // Swap activity + the processes paying for it.
+                    TipDetail {
+                        visible: root.cfg.showMem && root.cfg.showResponsiveness
+                        text: i18n("swap-in %1 pg/s · majfault %2/s",
+                            root.rateText(root.swapInRate),
+                            root.rateText(root.majfltRate))
+                    }
+                    Repeater {
+                        model: root.cfg.showMem && root.cfg.showResponsiveness
+                            ? root.swapGroups : []
+                        TipRow {
+                            required property var modelData
+                            name: i18n("%1 swapped", modelData.name)
+                            value: i18n("%1 GiB", root.gib(modelData.kB * 1024))
                         }
                     }
 
@@ -705,6 +1119,57 @@ PlasmoidItem {
                         name: i18n("Swap (zram fill)")
                         value: Math.round(root.swapPct * 100) + "%"
                     }
+
+                    // ---- Trend: 60 s sparkline of the lag value ----
+                    TipSeparator {
+                        visible: root.cfg.showResponsiveness && root.cfg.showCpu
+                    }
+                    TipHeader {
+                        visible: root.cfg.showResponsiveness && root.cfg.showCpu
+                        title: i18n("Trend")
+                        value: i18n("last 60 s")
+                    }
+                    Canvas {
+                        id: trendCanvas
+                        visible: root.cfg.showResponsiveness && root.cfg.showCpu
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: Kirigami.Units.gridUnit
+                        onPaint: {
+                            const ctx = getContext("2d");
+                            ctx.reset();
+                            const h = height;
+                            const w = width;
+                            if (h <= 0 || w <= 0)
+                                return;
+                            ctx.strokeStyle =
+                                (root.lagHistory.length > 0
+                                    && root.lagHistory[root.lagHistory.length - 1]
+                                        >= root.cfg.psiWarn)
+                                    ? Kirigami.Theme.negativeTextColor
+                                    : Kirigami.Theme.highlightColor;
+                            ctx.lineWidth = 1.5;
+                            ctx.beginPath();
+                            const n = root.lagHistory.length;
+                            for (let i = 0; i < n; i++) {
+                                const x = n > 1 ? (i / (n - 1)) * w : 0;
+                                const v = Math.min(100,
+                                    Math.max(0, root.lagHistory[i]));
+                                const y = h - (v / 100) * h;
+                                if (i === 0)
+                                    ctx.moveTo(x, y);
+                                else
+                                    ctx.lineTo(x, y);
+                            }
+                            ctx.stroke();
+                        }
+                        Connections {
+                            target: root
+                            function onLagRevisionChanged() {
+                                trendCanvas.requestPaint();
+                            }
+                        }
+                        onVisibleChanged: requestPaint()
+                    }
                 }
             }
         }
@@ -720,20 +1185,20 @@ PlasmoidItem {
             ThinBar {
                 visible: root.cfg.showCpu && !root.hybridTopology
                 height: row.height
-                value: root.cpuPct
-                barColor: root.cfg.cpuColor
+                value: root.dispUniform / 100
+                barColor: root.cpuBarColor(root.cfg.cpuColor)
             }
             ThinBar {
                 visible: root.cfg.showCpu && root.hybridTopology
                 height: row.height
-                value: root.pCpuGroupPct / 100
-                barColor: root.cfg.cpuColor
+                value: root.dispP / 100
+                barColor: root.cpuBarColor(root.cfg.cpuColor)
             }
             ThinBar {
                 visible: root.cfg.showCpu && root.hybridTopology
                 height: row.height
-                value: root.eCpuGroupPct / 100
-                barColor: root.cfg.eCpuColor
+                value: root.dispE / 100
+                barColor: root.cpuBarColor(root.cfg.eCpuColor)
             }
             ThinBar {
                 visible: root.cfg.showGpu
@@ -754,18 +1219,15 @@ PlasmoidItem {
                 width: visible ? 2 : 0
                 height: row.height
             }
-            ThinBar {
+            MemBar {
                 visible: root.cfg.showMem
                 height: row.height
-                value: root.memPct
-                barColor: {
-                    const pct = root.memPct * 100;
-                    if (pct >= root.cfg.critThreshold)
-                        return Kirigami.Theme.negativeTextColor;
-                    if (pct >= root.cfg.warnThreshold)
-                        return Kirigami.Theme.neutralTextColor;
-                    return root.cfg.memColor;
-                }
+                appFraction: root.memSegApp
+                zramFraction: root.memSegZram
+                cacheFraction: root.memSegCache
+                fillFraction: root.memBarValue
+                flash: root.swapFlashOpacity
+                barColor: root.memBarColor(root.memBarValue * 100)
             }
             ThinBar {
                 visible: root.cfg.showSwap
