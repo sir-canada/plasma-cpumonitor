@@ -20,6 +20,7 @@ KCM.SimpleKCM {
     property alias cfg_warnThreshold: warnSpin.value
     property alias cfg_critThreshold: critSpin.value
     property alias cfg_cpuColor: cpuColorBtn.color
+    property alias cfg_eCpuColor: eCpuColorBtn.color
     property alias cfg_gpuColor: gpuColorBtn.color
     property alias cfg_vramColor: vramColorBtn.color
     property alias cfg_memColor: memColorBtn.color
@@ -69,7 +70,22 @@ KCM.SimpleKCM {
         RowLayout {
             Kirigami.FormData.label: i18n("CPU usage:")
             QQC2.CheckBox { id: cpuCheck }
-            KQuickControls.ColorButton { id: cpuColorBtn; enabled: cpuCheck.checked }
+            QQC2.Label {
+                text: i18nc("P-core bar color", "P")
+                opacity: 0.6
+            }
+            KQuickControls.ColorButton {
+                id: cpuColorBtn
+                enabled: cpuCheck.checked
+            }
+            QQC2.Label {
+                text: i18nc("E-core bar color", "E")
+                opacity: 0.6
+            }
+            KQuickControls.ColorButton {
+                id: eCpuColorBtn
+                enabled: cpuCheck.checked
+            }
         }
 
         RowLayout {
@@ -148,14 +164,14 @@ KCM.SimpleKCM {
 
         QQC2.SpinBox {
             id: topCpuSpin
-            Kirigami.FormData.label: i18n("Top CPU processes (0 = off):")
+            Kirigami.FormData.label: i18n("Top CPU apps per core type (0 = off):")
             from: 0
             to: 10
         }
 
         QQC2.SpinBox {
             id: topMemSpin
-            Kirigami.FormData.label: i18n("Top memory processes (0 = off):")
+            Kirigami.FormData.label: i18n("Top memory applications (0 = off):")
             from: 0
             to: 10
         }

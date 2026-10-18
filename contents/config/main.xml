@@ -41,6 +41,9 @@
         <entry name="cpuColor" type="Color">
             <default>#3daee9</default>
         </entry>
+        <entry name="eCpuColor" type="Color">
+            <default>#a678e8</default>
+        </entry>
         <entry name="gpuColor" type="Color">
             <default>#9b59b6</default>
         </entry>
@@ -63,7 +66,7 @@
             <default>85</default>
         </entry>
         <entry name="topAppsCpu" type="Int">
-            <default>3</default>
+            <default>5</default>
         </entry>
         <entry name="topAppsMem" type="Int">
             <default>3</default>
