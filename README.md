@@ -39,7 +39,7 @@ memory and swap usage, with a rich hover tooltip.
 ## Install
 
 ```sh
-git clone https://github.com/sir-canada/plasma-thinbars plasma-cpumonitor
+git clone https://github.com/sir-canada/plasma-cpumonitor.git
 cd plasma-cpumonitor
 kpackagetool6 -t Plasma/Applet -i .
 ```

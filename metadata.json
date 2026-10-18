@@ -13,8 +13,8 @@
         "Id": "org.local.cpumonitor",
         "License": "MIT",
         "Name": "CPU Monitor",
-        "Version": "1.3",
-        "Website": "https://github.com/sir-canada/plasma-thinbars"
+        "Version": "1.31",
+        "Website": "https://github.com/sir-canada/plasma-cpumonitor"
     },
     "X-Plasma-API-Minimum-Version": "6.0"
 }
