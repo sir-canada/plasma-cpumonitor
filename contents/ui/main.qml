@@ -104,12 +104,14 @@ PlasmoidItem {
 
     // Memory bar color: activity-based overrides over the existing size-based
     // logic (warn/crit thresholds on the displayed value, cfg.memColor base).
+    // All availability math is done in kB so it never depends on the unit
+    // KSysGuard reports the memory sensors in (bytes, historically).
     function memBarColor(fracPct) {
         if (root.psiMem >= root.cfg.memPsiThreshold
             || root.swapInRate >= root.cfg.swapInThreshold)
             return Kirigami.Theme.negativeTextColor;
-        if (root.memAvailKB > 0
-            && root.memAvailKB < 0.1 * (root.memTotal.value || 0))
+        if (root.memTotalKB > 0 && root.memAvailKB > 0
+            && root.memAvailKB < 0.1 * root.memTotalKB)
             return Kirigami.Theme.neutralTextColor;
         if (fracPct >= root.cfg.critThreshold)
             return Kirigami.Theme.negativeTextColor;
@@ -386,6 +388,7 @@ PlasmoidItem {
     property real zramReal: 0          // bytes of RAM used to store them
     property real memAvailKB: 0        // MemAvailable (kB)
     property real memCacheKB: 0        // page cache (kB)
+    property real memTotalKB: 0        // MemTotal (kB), same unit as memAvailKB
     property var coreMaxP: []          // [{idx, pct}] busiest core per group
     property var coreMaxE: []
     property var coreMaxA: []
@@ -588,6 +591,7 @@ PlasmoidItem {
                 } else if (f[0] === "MEMINFO") {
                     root.memAvailKB = Number(f[1]) || 0;
                     root.memCacheKB = Number(f[2]) || 0;
+                    root.memTotalKB = Number(f[3]) || 0;
                 } else if (f[0] === "COREMAX") {
                     const entry = [{ idx: Number(f[2]) || 0, pct: Number(f[3]) || 0 }];
                     if (f[1] === "P") {
@@ -660,9 +664,10 @@ PlasmoidItem {
         }
     }
 
-    // Stacked memory bar: app RAM (solid), zram compressed (lighter) and
-    // reclaimable page cache (faint) piled from the bottom of the pool.
-    // A short strip flashes above the fill while pages are swapping in.
+    // Stacked memory bar: app RAM (solid), zram's *compressed* footprint
+    // (lighter) and reclaimable page cache (faint), piled bottom-up as
+    // fractions of the whole pool. A thin strip flashes just above the fill
+    // while pages are coming back from swap.
     component MemBar: Item {
         id: memBar
         property real appFraction: 0
@@ -673,60 +678,66 @@ PlasmoidItem {
         property real flash: 0
         width: Math.max(1, root.cfg.barWidth)
 
+        // Segment heights in pixels, relative to the FULL bar height (not the
+        // fill), so stacking is not double-scaled.
+        readonly property real appH: Math.max(0, appFraction) * height
+        readonly property real zramH: Math.max(0, zramFraction) * height
+        readonly property real cacheH: Math.max(0, cacheFraction) * height
+        readonly property real fillH: Math.max(width,
+            Math.min(1, Math.max(0, fillFraction)) * height)
+
         Rectangle {
             anchors.fill: parent
             radius: width / 2
             color: Kirigami.Theme.textColor
             opacity: 0.25
         }
-        // Track background + stacked segments, anchored to the bottom.
+
+        // Fill area: bottom-anchored, clipped to the total fill height.
         Item {
+            id: fill
             anchors {
                 left: parent.left
                 right: parent.right
                 bottom: parent.bottom
             }
-            height: Math.max(memBar.width,
-                parent.height * Math.min(1, Math.max(0, memBar.fillFraction)))
+            height: memBar.fillH
+            clip: true
 
+            // App RAM: solid, occupies the bottom portion (and the min-height
+            // nub so a tiny value is still visible).
             Rectangle {
                 anchors.fill: parent
                 radius: width / 2
                 color: memBar.barColor
             }
-            // Page cache sits on top of app RAM, above zram's compressed block.
+            // Zram compressed footprint, stacked directly above app RAM.
             Rectangle {
+                visible: memBar.zramH > 0
                 anchors {
                     left: parent.left
                     right: parent.right
                     bottom: parent.bottom
                 }
-                height: parent.height * memBar.zramFraction
-                radius: width / 2
+                anchors.bottomMargin: memBar.appH
+                height: memBar.zramH
                 color: Qt.alpha(root.cfg.swapColor, 0.7)
             }
+            // Reclaimable page cache, on top of the zram block.
             Rectangle {
+                visible: memBar.cacheH > 0
                 anchors {
                     left: parent.left
                     right: parent.right
                     bottom: parent.bottom
                 }
-                height: parent.height
-                radius: width / 2
+                anchors.bottomMargin: memBar.appH + memBar.zramH
+                height: memBar.cacheH
                 color: Qt.alpha(Kirigami.Theme.textColor, 0.18)
             }
-            Rectangle {
-                anchors {
-                    left: parent.left
-                    right: parent.right
-                    bottom: parent.bottom
-                }
-                height: parent.height * memBar.appFraction
-                radius: width / 2
-                color: memBar.barColor
-            }
         }
-        // Swap-in flash above the fill.
+
+        // Swap-in flash: a thin strip riding just above the fill.
         Rectangle {
             visible: memBar.flash > 0
             anchors {
@@ -734,11 +745,11 @@ PlasmoidItem {
                 right: parent.right
                 bottom: parent.bottom
             }
-            height: Math.max(memBar.width,
-                parent.height * Math.min(1, Math.max(0, memBar.fillFraction)))
+            anchors.bottomMargin: memBar.fillH
+            height: Math.max(2, memBar.width)
             radius: width / 2
             color: Kirigami.Theme.negativeTextColor
-            opacity: memBar.flash * 0.85
+            opacity: memBar.flash * 0.9
         }
 
         Behavior on fillFraction {
@@ -959,21 +970,6 @@ PlasmoidItem {
                             root.cfg.heatWarnThreshold,
                             root.cfg.heatCritThreshold)
                     }
-                    Repeater {
-                        model: root.cfg.showCpu && root.hybridTopology
-                            ? root.pCpuApps : []
-                        TipRow {
-                            required property var modelData
-                            name: modelData.name
-                            value: modelData.value
-                        }
-                    }
-                    TipDetail {
-                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
-                            && root.hybridTopology && root.coreSampleReady
-                            && root.pCpuApps.length === 0
-                        text: i18n("No sampled P-core activity")
-                    }
 
                     TipSeparator {
                         visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
@@ -992,31 +988,6 @@ PlasmoidItem {
                         fillColor: root.loadColor(root.eCpuGroupPct,
                             root.cfg.heatWarnThreshold,
                             root.cfg.heatCritThreshold)
-                    }
-                    Repeater {
-                        model: root.cfg.showCpu && root.hybridTopology
-                            ? root.eCpuApps : []
-                        TipRow {
-                            required property var modelData
-                            name: modelData.name
-                            value: modelData.value
-                        }
-                    }
-                    TipDetail {
-                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
-                            && root.hybridTopology && root.coreSampleReady
-                            && root.eCpuApps.length === 0
-                        text: i18n("No sampled E-core activity")
-                    }
-
-                    Repeater {
-                        model: root.cfg.showCpu && !root.hybridTopology
-                            ? root.cpuApps : []
-                        TipRow {
-                            required property var modelData
-                            name: modelData.name
-                            value: modelData.value
-                        }
                     }
 
                     TipSeparator {
@@ -1038,8 +1009,11 @@ PlasmoidItem {
                     }
 
                     TipDetail {
+                        // Fallback when there is no MEMINFO/ZRAM sampler data,
+                        // or when the responsiveness sections are disabled.
                         visible: root.cfg.showMem && root.cfg.showMemDetail
-                            && !root.cfg.showResponsiveness
+                            && (!root.cfg.showResponsiveness
+                                || !root.memHasSamplerData)
                         text: {
                             let t = i18n("apps %1", root.gib(memApp.value || 0));
                             if (root.cfg.includeSwap)
@@ -1053,6 +1027,7 @@ PlasmoidItem {
                     // Honest memory line: real zram footprint, reclaimable cache.
                     TipDetail {
                         visible: root.cfg.showMem && root.cfg.showResponsiveness
+                            && root.memHasSamplerData
                         text: {
                             let t = i18n("RAM %1/%2 GB",
                                 root.gib(memApp.value || 0),
@@ -1091,6 +1066,66 @@ PlasmoidItem {
                         }
                     }
 
+                    // ---- Top apps: CPU consumers per core type + RAM eaters,
+                    //      with each app's swapped size shown alongside RSS. ----
+                    TipSeparator {
+                        visible: (root.cfg.showCpu && root.cfg.topAppsCpu > 0)
+                            || (root.cfg.showMem && root.cfg.topAppsMem > 0)
+                    }
+                    TipHeader {
+                        visible: (root.cfg.showCpu && root.cfg.topAppsCpu > 0)
+                            || (root.cfg.showMem && root.cfg.topAppsMem > 0)
+                        title: i18n("Top apps")
+                    }
+                    TipDetail {
+                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
+                            && root.hybridTopology && root.pCpuApps.length > 0
+                        text: i18nc("@label core type", "P-cores")
+                    }
+                    Repeater {
+                        model: root.cfg.showCpu && root.hybridTopology
+                            ? root.pCpuApps : []
+                        TipRow {
+                            required property var modelData
+                            name: modelData.name
+                            value: modelData.value
+                        }
+                    }
+                    TipDetail {
+                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
+                            && root.hybridTopology && root.coreSampleReady
+                            && root.pCpuApps.length === 0
+                        text: i18n("No sampled P-core activity")
+                    }
+                    TipDetail {
+                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
+                            && root.hybridTopology && root.eCpuApps.length > 0
+                        text: i18nc("@label core type", "E-cores")
+                    }
+                    Repeater {
+                        model: root.cfg.showCpu && root.hybridTopology
+                            ? root.eCpuApps : []
+                        TipRow {
+                            required property var modelData
+                            name: modelData.name
+                            value: modelData.value
+                        }
+                    }
+                    TipDetail {
+                        visible: root.cfg.showCpu && root.cfg.topAppsCpu > 0
+                            && root.hybridTopology && root.coreSampleReady
+                            && root.eCpuApps.length === 0
+                        text: i18n("No sampled E-core activity")
+                    }
+                    Repeater {
+                        model: root.cfg.showCpu && !root.hybridTopology
+                            ? root.cpuApps : []
+                        TipRow {
+                            required property var modelData
+                            name: modelData.name
+                            value: modelData.value
+                        }
+                    }
                     Repeater {
                         model: root.cfg.showMem ? root.memApps : []
                         TipRow {

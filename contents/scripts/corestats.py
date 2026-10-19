@@ -235,18 +235,23 @@ def read_pressure(kind: str) -> float:
     return 0.0
 
 
-def read_meminfo() -> tuple[int, int]:
-    """Return (MemAvailable, Cached + SReclaimable + Buffers - Shmem) in kB."""
+def read_meminfo() -> tuple[int, int, int]:
+    """Return (MemAvailable, cache, MemTotal) in kB.
+
+    MemTotal is emitted so the QML side can compute "available < 10 %" in a
+    single unit (kB) without depending on whatever unit KSysGuard reports.
+    """
     values: dict[str, int] = {}
     try:
         text = Path("/proc/meminfo").read_text()
     except OSError:
-        return 0, 0
+        return 0, 0, 0
     for line in text.splitlines():
         fields = line.split()
         if len(fields) >= 2 and fields[1].isdigit():
             values[fields[0].rstrip(":")] = int(fields[1])
     available = values.get("MemAvailable", 0)
+    total = values.get("MemTotal", 0)
     cache = max(
         0,
         values.get("Cached", 0)
@@ -254,7 +259,7 @@ def read_meminfo() -> tuple[int, int]:
         + values.get("Buffers", 0)
         - values.get("Shmem", 0),
     )
-    return available, cache
+    return available, cache, total
 
 
 def read_zram() -> tuple[int, int, int]:
@@ -495,7 +500,7 @@ def main() -> int:
     psi_cpu = read_pressure("cpu")
     psi_mem = read_pressure("memory")
     psi_io = read_pressure("io")
-    mem_available_kb, mem_cache_kb = read_meminfo()
+    mem_available_kb, mem_cache_kb, mem_total_kb = read_meminfo()
     zram_orig, zram_compr, zram_real = read_zram()
 
     def busiest(group: set[int] | None) -> tuple[int, float] | None:
@@ -561,7 +566,7 @@ def main() -> int:
     )
 
     print(f"ZRAM|{zram_orig}|{zram_compr}|{zram_real}")
-    print(f"MEMINFO|{mem_available_kb}|{mem_cache_kb}")
+    print(f"MEMINFO|{mem_available_kb}|{mem_cache_kb}|{mem_total_kb}")
     for group in ("P", "E", "A"):
         entry = core_max.get(group)
         if entry is not None:
