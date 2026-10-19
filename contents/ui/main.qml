@@ -837,6 +837,11 @@ PlasmoidItem {
         PlasmaCore.ToolTipArea {
             id: toolTipArea
             anchors.fill: parent
+            // Keep the tooltip open while the pointer is over the tooltip
+            // itself (not just the bars), so the popup can be read and its
+            // rows followed; it still hides as soon as the pointer leaves
+            // both the bars and the tooltip.
+            interactive: true
 
             onContainsMouseChanged: {
                 root.tooltipHovered = containsMouse;
